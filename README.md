@@ -1,18 +1,19 @@
 # Status Bot 🤖
 
-A Discord presence tracking bot hosted on Replit with a Flask keep-alive web server.
+A Discord presence tracking bot hosted with a modern Flask dashboard and real-time statistics monitoring.
 
 ## Features
 - Tracks when members go **online / idle / dnd / offline**
-- Reports session duration and away time
+- Real-time web dashboard displaying all server statistics, member activity, current sessions, and total online duration
+- Live auto-refreshing dashboard with search & status filters
+- Reports session duration and away time to Discord channels
 - Daily stats auto-reset at midnight (Asia/Karachi timezone)
-- Flask web dashboard keeps the Replit project alive
+- REST API endpoint `/api/stats` for programmatic status retrieval
+- Flask web dashboard keeps the host/project alive (e.g. Replit, Railway, Render)
 
-## Setup on Replit
+## Setup
 
-1. **Import this project** into Replit (or create a new Python Repl and upload these files).
-
-2. **Set Secrets** (Environment Variables) in the Replit Secrets tab:
+1. **Set Environment Variables**:
 
    | Key | Description |
    |-----|-------------|
@@ -20,24 +21,32 @@ A Discord presence tracking bot hosted on Replit with a Flask keep-alive web ser
    | `GUILD_ID` | The server (guild) ID to monitor |
    | `ONLINE_REPORT_CHANNEL_ID` | Channel ID where status updates are posted |
 
-3. **Click Run** — the Flask server starts on port 5000 and the Discord bot connects in the background.
+2. **Run Application**:
+   ```bash
+   python main.py
+   ```
+   Or using Gunicorn:
+   ```bash
+   gunicorn main:app
+   ```
 
 ## Keep Alive
 
-The Flask web server on `/` serves a small dashboard. Use [UptimeRobot](https://uptimerobot.com/) to ping the Replit URL every 5 minutes so the project stays awake.
+The Flask web server on `/` serves a full stats dashboard. Use [UptimeRobot](https://uptimerobot.com/) to ping the URL every 5 minutes so the deployment stays active.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `main.py` | Entry point — starts Flask + bot thread |
-| `bot.py` | Discord bot logic (presence tracking) |
+| `main.py` | Entry point — starts Flask app + bot background thread |
+| `bot.py` | Discord bot logic & stats aggregation |
 | `requirements.txt` | Python dependencies |
-| `.replit` | Replit run configuration |
+| `railway.toml` / `.replit` | Deployment configurations |
 
 ## Endpoints
 
 | Route | Description |
 |-------|-------------|
-| `GET /` | Web dashboard with bot status |
-| `GET /health` | JSON health check |
+| `GET /` | Live stats dashboard with member activity & metrics |
+| `GET /api/stats` | JSON endpoint with comprehensive server & member statistics |
+| `GET /health` | Health check endpoint |
