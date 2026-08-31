@@ -1,0 +1,15 @@
+# Environment variables & secrets
+.env
+
+# Python cache & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# State files & data
+presence_tracking.json
+
+# Environments
+.venv/
+env/
+venv/

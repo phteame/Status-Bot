@@ -1,6 +1,12 @@
 import threading
 import os
+import sys
 import json
+from dotenv import load_dotenv
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+load_dotenv()
+
 from flask import Flask, jsonify, render_template_string
 from bot import run_bot, get_status, get_all_stats
 

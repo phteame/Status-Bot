@@ -3,6 +3,9 @@ from datetime import datetime
 import pytz
 import os
 import asyncio
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ===== CONFIG =====
 TOKEN = os.environ.get("DISCORD_TOKEN", "")
