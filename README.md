@@ -9,6 +9,7 @@ A Discord presence tracking bot hosted with a modern Flask dashboard and real-ti
   - **Weekly Report (7 Days)**: 7-day day-by-day activity bar chart, weekly hours, daily average, and weekly leaderboard.
   - **Monthly Report (30 Days)**: 30-day activity trend line, monthly totals, and member attendance consistency rates (% active days).
   - **Live Real-time Monitor**: Live status cards, current session timers, member search and filtering (Online, Idle, DnD, Offline).
+  - **Theme Modes**: Support for **🌙 Dark**, **☀️ Light**, and **💻 Auto (System)** theme options with real-time Chart.js color synchronization.
 - **Persistent Data Storage**: Automatically persists daily activity records to `presence_history.json` so data is preserved across days and server restarts.
 - **1-Click CSV Export**: Download complete weekly or monthly attendance & hours reports as formatted CSV spreadsheets.
 - **REST API Endpoints**: `/api/stats`, `/api/stats/weekly`, `/api/stats/monthly`, and `/api/export/csv`.

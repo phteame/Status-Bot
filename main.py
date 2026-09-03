@@ -2,33 +2,52 @@ import threading
 import os
 import sys
 import json
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 load_dotenv()
 
 from flask import Flask, jsonify, render_template_string, request, Response
-from bot import run_bot, get_status, get_all_stats, stats_manager, now
+from bot import run_bot, get_status, get_all_stats, stats_manager, now, trigger_sync
 
 # ===== FLASK APP =====
 app = Flask(__name__)
 
 DASHBOARD_HTML = """
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Executive Discord presence & activity reporting dashboard with weekly and monthly statistics.">
+    <meta name="description" content="Executive Discord presence & activity reporting dashboard with Today, Yesterday, Weekly, Monthly, and Custom Date/Team statistics.">
     <title>Status Bot Analytics & Reports - {{ stats.guild_name }}</title>
+    
+    <!-- Inline Theme Script to prevent flash of wrong theme -->
+    <script>
+        (function() {
+            const savedTheme = localStorage.getItem('statusbot_theme') || 'auto';
+            let effectiveTheme = savedTheme;
+            if (savedTheme === 'auto') {
+                effectiveTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+            document.documentElement.setAttribute('data-theme', effectiveTheme);
+            document.documentElement.setAttribute('data-theme-setting', savedTheme);
+        })();
+    </script>
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
     <!-- Chart.js for interactive reporting visualizations -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        :root {
+        /* Dark Theme Variables (Default) */
+        html[data-theme="dark"] {
             --bg-color: #080c14;
+            --bg-radial-1: rgba(99, 102, 241, 0.15);
+            --bg-radial-2: rgba(139, 92, 246, 0.12);
+            --bg-radial-3: rgba(16, 185, 129, 0.08);
             --card-bg: rgba(15, 23, 42, 0.75);
             --card-border: rgba(255, 255, 255, 0.08);
             --card-hover: rgba(255, 255, 255, 0.14);
@@ -44,6 +63,41 @@ DASHBOARD_HTML = """
             --dnd: #ef4444;
             --dnd-glow: rgba(239, 68, 68, 0.25);
             --offline: #64748b;
+            --input-bg: rgba(15, 23, 42, 0.9);
+            --pill-bg: rgba(255, 255, 255, 0.04);
+            --table-hover: rgba(255, 255, 255, 0.025);
+            --tabs-bg: rgba(15, 23, 42, 0.6);
+            --theme-selector-bg: rgba(15, 23, 42, 0.8);
+            --title-gradient: linear-gradient(135deg, #ffffff 30%, #cbd5e1);
+        }
+
+        /* Light Theme Variables */
+        html[data-theme="light"] {
+            --bg-color: #f1f5f9;
+            --bg-radial-1: rgba(99, 102, 241, 0.12);
+            --bg-radial-2: rgba(139, 92, 246, 0.10);
+            --bg-radial-3: rgba(16, 185, 129, 0.08);
+            --card-bg: rgba(255, 255, 255, 0.9);
+            --card-border: rgba(203, 213, 225, 0.85);
+            --card-hover: rgba(148, 163, 184, 0.4);
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --primary: #4f46e5;
+            --primary-glow: rgba(79, 70, 229, 0.2);
+            --accent: #7c3aed;
+            --online: #059669;
+            --online-glow: rgba(5, 150, 105, 0.25);
+            --idle: #d97706;
+            --idle-glow: rgba(217, 119, 6, 0.25);
+            --dnd: #dc2626;
+            --dnd-glow: rgba(220, 38, 38, 0.25);
+            --offline: #64748b;
+            --input-bg: rgba(255, 255, 255, 0.95);
+            --pill-bg: rgba(241, 245, 249, 0.9);
+            --table-hover: rgba(241, 245, 249, 0.7);
+            --tabs-bg: rgba(226, 232, 240, 0.8);
+            --theme-selector-bg: rgba(226, 232, 240, 0.9);
+            --title-gradient: linear-gradient(135deg, #0f172a 30%, #334155);
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -52,13 +106,14 @@ DASHBOARD_HTML = """
             font-family: 'Inter', system-ui, -apple-system, sans-serif;
             background-color: var(--bg-color);
             background-image: 
-                radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 45%),
-                radial-gradient(at 100% 0%, rgba(139, 92, 246, 0.12) 0px, transparent 40%),
-                radial-gradient(at 50% 100%, rgba(16, 185, 129, 0.08) 0px, transparent 50%);
+                radial-gradient(at 0% 0%, var(--bg-radial-1) 0px, transparent 45%),
+                radial-gradient(at 100% 0%, var(--bg-radial-2) 0px, transparent 40%),
+                radial-gradient(at 50% 100%, var(--bg-radial-3) 0px, transparent 50%);
             background-attachment: fixed;
             color: var(--text-main);
             min-height: 100vh;
             padding: 2rem 1.25rem 4rem 1.25rem;
+            transition: background-color 0.3s ease, color 0.3s ease;
         }
 
         .container {
@@ -101,7 +156,7 @@ DASHBOARD_HTML = """
             font-size: 1.85rem;
             font-weight: 700;
             letter-spacing: -0.02em;
-            background: linear-gradient(135deg, #ffffff 30%, #cbd5e1);
+            background: var(--title-gradient);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
@@ -119,13 +174,48 @@ DASHBOARD_HTML = """
             flex-wrap: wrap;
         }
 
+        /* Theme Switcher Control */
+        .theme-switcher {
+            display: inline-flex;
+            align-items: center;
+            background: var(--theme-selector-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 3px;
+            gap: 2px;
+        }
+
+        .theme-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            padding: 6px 10px;
+            border-radius: 8px;
+            font-size: 0.825rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            transition: all 0.2s ease;
+        }
+
+        .theme-btn:hover { color: var(--text-main); }
+
+        .theme-btn.active {
+            background: var(--card-bg);
+            color: var(--text-main);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+            border: 1px solid var(--card-border);
+        }
+
         .status-badge {
             display: inline-flex;
             align-items: center;
             gap: 8px;
             padding: 8px 16px;
             border-radius: 9999px;
-            background: rgba(255, 255, 255, 0.04);
+            background: var(--pill-bg);
             border: 1px solid var(--card-border);
             font-size: 0.875rem;
             font-weight: 500;
@@ -148,7 +238,7 @@ DASHBOARD_HTML = """
             gap: 8px;
             background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(139, 92, 246, 0.25));
             border: 1px solid rgba(99, 102, 241, 0.4);
-            color: #c7d2fe;
+            color: var(--text-main);
             padding: 8px 16px;
             border-radius: 10px;
             font-size: 0.875rem;
@@ -169,7 +259,7 @@ DASHBOARD_HTML = """
         .tabs-nav {
             display: flex;
             gap: 0.5rem;
-            background: rgba(15, 23, 42, 0.6);
+            background: var(--tabs-bg);
             padding: 6px;
             border-radius: 14px;
             border: 1px solid var(--card-border);
@@ -181,9 +271,9 @@ DASHBOARD_HTML = """
             background: transparent;
             border: none;
             color: var(--text-muted);
-            padding: 10px 20px;
+            padding: 10px 18px;
             border-radius: 10px;
-            font-size: 0.9rem;
+            font-size: 0.875rem;
             font-weight: 600;
             cursor: pointer;
             display: flex;
@@ -195,7 +285,7 @@ DASHBOARD_HTML = """
 
         .tab-btn:hover {
             color: var(--text-main);
-            background: rgba(255, 255, 255, 0.04);
+            background: var(--pill-bg);
         }
 
         .tab-btn.active {
@@ -222,7 +312,7 @@ DASHBOARD_HTML = """
         /* KPI Grid */
         .kpi-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
             gap: 1.25rem;
             margin-bottom: 2rem;
         }
@@ -248,7 +338,7 @@ DASHBOARD_HTML = """
         .kpi-card:hover {
             transform: translateY(-3px);
             border-color: var(--card-hover);
-            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
         }
 
         .kpi-header {
@@ -278,7 +368,7 @@ DASHBOARD_HTML = """
 
         .kpi-value {
             font-family: 'Outfit', sans-serif;
-            font-size: 2rem;
+            font-size: 1.85rem;
             font-weight: 700;
             color: var(--text-main);
             line-height: 1.2;
@@ -308,6 +398,7 @@ DASHBOARD_HTML = """
             border: 1px solid var(--card-border);
             border-radius: 20px;
             padding: 1.5rem;
+            transition: background-color 0.3s ease, border-color 0.3s ease;
         }
 
         .panel-header {
@@ -315,6 +406,8 @@ DASHBOARD_HTML = """
             justify-content: space-between;
             align-items: center;
             margin-bottom: 1.25rem;
+            flex-wrap: wrap;
+            gap: 0.75rem;
         }
 
         .panel-title {
@@ -332,7 +425,7 @@ DASHBOARD_HTML = """
             width: 100%;
         }
 
-        /* Leaderboard Podium & List */
+        /* Leaderboard List */
         .leaderboard-list {
             display: flex;
             flex-direction: column;
@@ -344,14 +437,14 @@ DASHBOARD_HTML = """
             align-items: center;
             justify-content: space-between;
             padding: 10px 14px;
-            background: rgba(255, 255, 255, 0.02);
+            background: var(--pill-bg);
             border: 1px solid var(--card-border);
             border-radius: 12px;
             transition: all 0.2s ease;
         }
 
         .leader-item:hover {
-            background: rgba(255, 255, 255, 0.05);
+            background: var(--table-hover);
             transform: translateX(3px);
         }
 
@@ -372,10 +465,10 @@ DASHBOARD_HTML = """
             justify-content: center;
         }
 
-        .rank-1 { background: rgba(234, 179, 8, 0.2); color: #facc15; }
-        .rank-2 { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; }
-        .rank-3 { background: rgba(180, 83, 9, 0.2); color: #fb923c; }
-        .rank-other { background: rgba(255, 255, 255, 0.05); color: var(--text-muted); }
+        .rank-1 { background: rgba(234, 179, 8, 0.2); color: #eab308; }
+        .rank-2 { background: rgba(148, 163, 184, 0.2); color: #94a3b8; }
+        .rank-3 { background: rgba(180, 83, 9, 0.2); color: #ea580c; }
+        .rank-other { background: var(--pill-bg); color: var(--text-muted); }
 
         .leader-avatar {
             width: 32px;
@@ -387,6 +480,7 @@ DASHBOARD_HTML = """
             justify-content: center;
             font-size: 0.8rem;
             font-weight: 600;
+            color: #fff;
             object-fit: cover;
         }
 
@@ -399,10 +493,10 @@ DASHBOARD_HTML = """
             font-family: 'Outfit', sans-serif;
             font-size: 0.95rem;
             font-weight: 700;
-            color: #a855f7;
+            color: #8b5cf6;
         }
 
-        /* Controls / Search */
+        /* Controls & Filter Bar */
         .section-header {
             display: flex;
             justify-content: space-between;
@@ -430,7 +524,7 @@ DASHBOARD_HTML = """
         }
 
         .search-box input {
-            background: rgba(15, 23, 42, 0.9);
+            background: var(--input-bg);
             border: 1px solid var(--card-border);
             border-radius: 10px;
             padding: 8px 14px 8px 36px;
@@ -458,7 +552,7 @@ DASHBOARD_HTML = """
         }
 
         .filter-btn {
-            background: rgba(255, 255, 255, 0.04);
+            background: var(--pill-bg);
             border: 1px solid var(--card-border);
             border-radius: 8px;
             padding: 7px 14px;
@@ -472,7 +566,164 @@ DASHBOARD_HTML = """
         .filter-btn:hover, .filter-btn.active {
             background: rgba(99, 102, 241, 0.2);
             border-color: var(--primary);
-            color: #ffffff;
+            color: var(--text-main);
+        }
+
+        /* Custom Report Controls */
+        .report-filter-bar {
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--card-border);
+            border-radius: 18px;
+            padding: 1.25rem;
+            margin-bottom: 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 1.25rem;
+        }
+
+        .report-inputs-group {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .custom-date-input {
+            background: var(--input-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 10px;
+            padding: 8px 12px;
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.875rem;
+            font-weight: 600;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .custom-date-input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 10px var(--primary-glow);
+        }
+
+        .custom-select {
+            background: var(--input-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 10px;
+            padding: 8px 14px;
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.875rem;
+            font-weight: 500;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .quick-date-pills {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .date-pill {
+            background: var(--pill-bg);
+            border: 1px solid var(--card-border);
+            color: var(--text-muted);
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .date-pill:hover, .date-pill.active {
+            background: rgba(99, 102, 241, 0.2);
+            color: var(--text-main);
+            border-color: var(--primary);
+        }
+
+        .btn-sync {
+            background: var(--pill-bg);
+            border: 1px solid var(--card-border);
+            color: var(--text-main);
+            padding: 8px 14px;
+            border-radius: 10px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s ease;
+        }
+
+        .btn-sync:hover {
+            background: rgba(99, 102, 241, 0.15);
+            border-color: var(--primary);
+        }
+
+        .btn-sync.spinning span {
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+
+        /* Timeline Feed */
+        .timeline-container {
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            padding: 1.5rem;
+            margin-top: 2rem;
+        }
+
+        .timeline-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.85rem;
+            max-height: 400px;
+            overflow-y: auto;
+            padding-right: 6px;
+        }
+
+        .timeline-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            background: var(--pill-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            transition: all 0.2s ease;
+            gap: 12px;
+        }
+
+        .timeline-item:hover {
+            background: var(--table-hover);
+            transform: translateX(2px);
+        }
+
+        .timeline-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .timeline-time {
+            font-family: monospace;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .timeline-body {
+            font-size: 0.875rem;
+            color: var(--text-main);
         }
 
         /* Enhanced Data Table */
@@ -482,6 +733,7 @@ DASHBOARD_HTML = """
             border: 1px solid var(--card-border);
             border-radius: 20px;
             overflow: hidden;
+            transition: background-color 0.3s ease, border-color 0.3s ease;
         }
 
         table {
@@ -492,7 +744,7 @@ DASHBOARD_HTML = """
         }
 
         th {
-            background: rgba(255, 255, 255, 0.02);
+            background: var(--pill-bg);
             padding: 1.1rem 1.25rem;
             color: var(--text-muted);
             font-weight: 600;
@@ -509,7 +761,7 @@ DASHBOARD_HTML = """
         }
 
         tr:last-child td { border-bottom: none; }
-        tr:hover td { background: rgba(255, 255, 255, 0.025); }
+        tr:hover td { background: var(--table-hover); }
 
         .user-cell {
             display: flex;
@@ -557,14 +809,14 @@ DASHBOARD_HTML = """
             text-transform: capitalize;
         }
 
-        .badge-status.online { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid var(--online-glow); }
-        .badge-status.idle { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid var(--idle-glow); }
-        .badge-status.dnd { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid var(--dnd-glow); }
-        .badge-status.offline { background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid rgba(255, 255, 255, 0.05); }
+        .badge-status.online { background: rgba(16, 185, 129, 0.15); color: var(--online); border: 1px solid var(--online-glow); }
+        .badge-status.idle { background: rgba(245, 158, 11, 0.15); color: var(--idle); border: 1px solid var(--idle-glow); }
+        .badge-status.dnd { background: rgba(239, 68, 68, 0.15); color: var(--dnd); border: 1px solid var(--dnd-glow); }
+        .badge-status.offline { background: rgba(100, 116, 139, 0.15); color: var(--offline); border: 1px solid var(--card-border); }
 
         .time-pill {
             display: inline-block;
-            background: rgba(255, 255, 255, 0.04);
+            background: var(--pill-bg);
             border: 1px solid var(--card-border);
             padding: 4px 10px;
             border-radius: 8px;
@@ -576,18 +828,19 @@ DASHBOARD_HTML = """
         .time-pill.highlight {
             background: rgba(99, 102, 241, 0.15);
             border-color: rgba(99, 102, 241, 0.35);
-            color: #a5b4fc;
+            color: var(--primary);
         }
 
         .progress-bar-bg {
             width: 100px;
             height: 6px;
-            background: rgba(255, 255, 255, 0.06);
+            background: var(--pill-bg);
             border-radius: 99px;
             overflow: hidden;
             display: inline-block;
             vertical-align: middle;
             margin-right: 8px;
+            border: 1px solid var(--card-border);
         }
 
         .progress-bar-fill {
@@ -597,7 +850,7 @@ DASHBOARD_HTML = """
         }
 
         .info-bar {
-            background: rgba(255, 255, 255, 0.02);
+            background: var(--card-bg);
             border: 1px solid var(--card-border);
             border-radius: 14px;
             padding: 0.875rem 1.25rem;
@@ -643,11 +896,24 @@ DASHBOARD_HTML = """
                 </div>
             </div>
             <div class="header-actions">
+                <!-- Theme Switcher -->
+                <div class="theme-switcher" id="theme-switcher">
+                    <button class="theme-btn" data-theme-val="dark" onclick="setTheme('dark')" title="Dark Mode">
+                        <span>🌙</span> Dark
+                    </button>
+                    <button class="theme-btn" data-theme-val="light" onclick="setTheme('light')" title="Light Mode">
+                        <span>☀️</span> Light
+                    </button>
+                    <button class="theme-btn" data-theme-val="auto" onclick="setTheme('auto')" title="System Automatic Theme">
+                        <span>💻</span> Auto
+                    </button>
+                </div>
+
                 <div class="status-badge">
                     <span class="status-dot {{ stats.bot_status }}" id="bot-status-dot"></span>
                     <span id="bot-status-text">Bot {{ stats.bot_status | capitalize }}</span>
                 </div>
-                <a href="/api/export/csv?period=weekly" class="btn-export" id="btn-export-csv" title="Download spreadsheet report">
+                <a href="/api/export/csv?period=today" class="btn-export" id="btn-export-csv" title="Download spreadsheet report">
                     📥 Export CSV
                 </a>
             </div>
@@ -658,14 +924,23 @@ DASHBOARD_HTML = """
             <button class="tab-btn active" onclick="switchTab('overview')">
                 <span>📈</span> Overview Analytics
             </button>
+            <button class="tab-btn" onclick="switchTab('today')">
+                <span>⚡</span> Today
+            </button>
+            <button class="tab-btn" onclick="switchTab('yesterday')">
+                <span>⏮️</span> Yesterday
+            </button>
             <button class="tab-btn" onclick="switchTab('weekly')">
-                <span>📅</span> Weekly Report (7 Days)
+                <span>📅</span> Weekly (7d)
             </button>
             <button class="tab-btn" onclick="switchTab('monthly')">
-                <span>🗓️</span> Monthly Report (30 Days)
+                <span>🗓️</span> Monthly (30d)
+            </button>
+            <button class="tab-btn" onclick="switchTab('report')">
+                <span>📋</span> Report (Filter by Day & Team)
             </button>
             <button class="tab-btn" onclick="switchTab('live')">
-                <span>⚡</span> Live Monitor
+                <span>📡</span> Live Monitor
             </button>
         </div>
 
@@ -678,7 +953,7 @@ DASHBOARD_HTML = """
                         <span>Today Online Time</span>
                         <div class="kpi-icon green">⚡</div>
                     </div>
-                    <div class="kpi-value" id="ov-today-time" style="color: #34d399;">
+                    <div class="kpi-value" id="ov-today-time" style="color: var(--online);">
                         {{ stats.total_server_online_fmt }}
                     </div>
                     <div class="kpi-sub"><span id="ov-online-count">{{ stats.online_count }}</span> active members right now</div>
@@ -686,10 +961,21 @@ DASHBOARD_HTML = """
 
                 <div class="kpi-card">
                     <div class="kpi-header">
+                        <span>Yesterday Online Time</span>
+                        <div class="kpi-icon amber">⏮️</div>
+                    </div>
+                    <div class="kpi-value" id="ov-yesterday-time" style="color: var(--idle);">
+                        {{ stats.yesterday.total_server_formatted }}
+                    </div>
+                    <div class="kpi-sub">{{ stats.yesterday.active_team_count }} active members yesterday</div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
                         <span>This Week (7 Days)</span>
                         <div class="kpi-icon indigo">📅</div>
                     </div>
-                    <div class="kpi-value" id="ov-week-time" style="color: #818cf8;">
+                    <div class="kpi-value" id="ov-week-time" style="color: var(--primary);">
                         {{ stats.weekly.total_server_formatted }}
                     </div>
                     <div class="kpi-sub">Avg <span id="ov-week-avg">{{ stats.weekly.avg_server_daily_formatted }}</span> / day • {{ stats.weekly.total_server_hours }} hrs</div>
@@ -700,21 +986,10 @@ DASHBOARD_HTML = """
                         <span>This Month (30 Days)</span>
                         <div class="kpi-icon purple">🗓️</div>
                     </div>
-                    <div class="kpi-value" id="ov-month-time" style="background: linear-gradient(135deg, #c084fc, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+                    <div class="kpi-value" id="ov-month-time" style="color: var(--accent);">
                         {{ stats.monthly.total_server_formatted }}
                     </div>
                     <div class="kpi-sub">Avg <span id="ov-month-avg">{{ stats.monthly.avg_server_daily_formatted }}</span> / day • {{ stats.monthly.total_server_hours }} hrs</div>
-                </div>
-
-                <div class="kpi-card">
-                    <div class="kpi-header">
-                        <span>Team Participation</span>
-                        <div class="kpi-icon amber">👥</div>
-                    </div>
-                    <div class="kpi-value" id="ov-active-rate" style="color: #fbbf24;">
-                        {{ stats.weekly.active_rate_percentage }}%
-                    </div>
-                    <div class="kpi-sub"><span id="ov-active-count">{{ stats.weekly.active_team_count }}</span> of {{ stats.weekly.team_size }} members active this week</div>
                 </div>
             </div>
 
@@ -733,26 +1008,26 @@ DASHBOARD_HTML = """
                 <div class="card-panel">
                     <div class="panel-header">
                         <div class="panel-title"><span>🏆</span> Weekly Top Performers</div>
-                        <a href="#" onclick="switchTab('weekly'); return false;" style="font-size: 0.8rem; color: #818cf8; text-decoration: none;">View All</a>
+                        <a href="#" onclick="switchTab('weekly'); return false;" style="font-size: 0.8rem; color: var(--primary); text-decoration: none;">View All</a>
                     </div>
                     <div class="leaderboard-list" id="ov-leaderboard">
-                        {% for m in stats.weekly.members[:5] %}
+                        {% for item in stats.weekly.members[:5] %}
                         <div class="leader-item">
                             <div class="leader-left">
                                 <span class="leader-rank {% if loop.index == 1 %}rank-1{% elif loop.index == 2 %}rank-2{% elif loop.index == 3 %}rank-3{% else %}rank-other{% endif %}">
                                     {{ loop.index }}
                                 </span>
-                                {% if m.avatar_url %}
-                                <img src="{{ m.avatar_url }}" alt="{{ m.name }}" class="leader-avatar">
+                                {% if item.avatar_url %}
+                                <img src="{{ item.avatar_url }}" alt="{{ item.name }}" class="leader-avatar">
                                 {% else %}
-                                <div class="leader-avatar">{{ m.name[0] | upper }}</div>
+                                <div class="leader-avatar">{{ item.name[0] | upper }}</div>
                                 {% endif %}
                                 <div>
-                                    <div class="leader-name">{{ m.name }}</div>
-                                    <div style="font-size: 0.75rem; color: var(--text-muted);">{{ m.active_days }} / 7 days active</div>
+                                    <div class="leader-name">{{ item.name }}</div>
+                                    <div style="font-size: 0.75rem; color: var(--text-muted);">{{ item.active_days }} / 7 days active</div>
                                 </div>
                             </div>
-                            <div class="leader-score">{{ m.total_formatted }}</div>
+                            <div class="leader-score">{{ item.total_formatted }}</div>
                         </div>
                         {% else %}
                         <div style="color: var(--text-muted); font-size: 0.85rem; padding: 1rem; text-align: center;">No activity recorded yet.</div>
@@ -762,7 +1037,235 @@ DASHBOARD_HTML = """
             </div>
         </div>
 
-        <!-- ==================== TAB 2: WEEKLY REPORT ==================== -->
+        <!-- ==================== TAB 2: TODAY REPORT ==================== -->
+        <div id="pane-today" class="tab-pane">
+            <div class="kpi-grid">
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span>Today Total Tracked</span>
+                        <div class="kpi-icon green">⚡</div>
+                    </div>
+                    <div class="kpi-value" id="td-total-time" style="color: var(--online);">{{ stats.today.total_server_formatted }}</div>
+                    <div class="kpi-sub" id="td-total-hrs">{{ stats.today.total_server_hours }} hours accumulated today</div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span>Today's Top Contributor</span>
+                        <div class="kpi-icon amber">👑</div>
+                    </div>
+                    <div class="kpi-value" id="td-top-name" style="font-size: 1.5rem; color: var(--idle);">
+                        {{ stats.today.top_contributor.name if stats.today.top_contributor else "None" }}
+                    </div>
+                    <div class="kpi-sub" id="td-top-time">
+                        {{ stats.today.top_contributor.total_formatted if stats.today.top_contributor else "-" }}
+                    </div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span>Active Team Today</span>
+                        <div class="kpi-icon indigo">👥</div>
+                    </div>
+                    <div class="kpi-value" id="td-part-rate" style="color: var(--primary);">{{ stats.today.active_rate_percentage }}%</div>
+                    <div class="kpi-sub" id="td-part-sub">{{ stats.today.active_team_count }} active out of {{ stats.today.team_size }}</div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span>Today's Status Changes</span>
+                        <div class="kpi-icon purple">📝</div>
+                    </div>
+                    <div class="kpi-value" id="td-events-count" style="color: var(--accent);">{{ stats.today.total_events_count }}</div>
+                    <div class="kpi-sub">Events logged in #online-report</div>
+                </div>
+            </div>
+
+            <!-- Today Hourly Chart -->
+            <div class="card-panel" style="margin-bottom: 2rem;">
+                <div class="panel-header">
+                    <div class="panel-title"><span>⚡</span> Today's Hourly Activity Breakdown (24h)</div>
+                    <a href="/api/export/csv?period=today" class="btn-export" style="font-size: 0.8rem; padding: 6px 12px;">Download Today's CSV</a>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="todayHourlyChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Today Member Table -->
+            <div class="section-header">
+                <div class="section-title">Today's Team Performance & Attendance</div>
+            </div>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Member</th>
+                            <th>Today Online Time</th>
+                            <th>Total Hours</th>
+                            <th>Share %</th>
+                            <th>Status Changes</th>
+                        </tr>
+                    </thead>
+                    <tbody id="todayTableBody">
+                        {% for mem in stats.today.members %}
+                        <tr>
+                            <td>
+                                <span class="leader-rank {% if mem.rank == 1 %}rank-1{% elif mem.rank == 2 %}rank-2{% elif mem.rank == 3 %}rank-3{% else %}rank-other{% endif %}">
+                                    {{ mem.rank }}
+                                </span>
+                            </td>
+                            <td>
+                                <div class="user-cell">
+                                    {% if mem.avatar_url %}
+                                    <img src="{{ mem.avatar_url }}" alt="{{ mem.name }}" class="avatar">
+                                    {% else %}
+                                    <div class="avatar">{{ mem.name[0] | upper }}</div>
+                                    {% endif %}
+                                    <div class="user-names">
+                                        <span class="user-name">{{ mem.name }}</span>
+                                        <span class="user-handle">{{ mem.username }}</span>
+                                    </div>
+                                </div>
+                            </td>
+                            <td>
+                                <span class="time-pill highlight">{{ mem.total_formatted }}</span>
+                            </td>
+                            <td>
+                                <strong>{{ mem.total_hours }}</strong> hrs
+                            </td>
+                            <td>
+                                <div class="progress-bar-bg">
+                                    <div class="progress-bar-fill" style="width: {{ mem.share_percentage }}%;"></div>
+                                </div>
+                                <span style="font-weight: 600; font-size: 0.8rem;">{{ mem.share_percentage }}%</span>
+                            </td>
+                            <td>
+                                <span class="time-pill">{{ mem.events_count }} events</span>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ==================== TAB 3: YESTERDAY REPORT ==================== -->
+        <div id="pane-yesterday" class="tab-pane">
+            <div class="kpi-grid">
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span>Yesterday Total Tracked</span>
+                        <div class="kpi-icon amber">⏮️</div>
+                    </div>
+                    <div class="kpi-value" id="yd-total-time" style="color: var(--idle);">{{ stats.yesterday.total_server_formatted }}</div>
+                    <div class="kpi-sub" id="yd-total-hrs">{{ stats.yesterday.total_server_hours }} hours accumulated yesterday</div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span>Yesterday's Top Contributor</span>
+                        <div class="kpi-icon green">👑</div>
+                    </div>
+                    <div class="kpi-value" id="yd-top-name" style="font-size: 1.5rem; color: var(--online);">
+                        {{ stats.yesterday.top_contributor.name if stats.yesterday.top_contributor else "None" }}
+                    </div>
+                    <div class="kpi-sub" id="yd-top-time">
+                        {{ stats.yesterday.top_contributor.total_formatted if stats.yesterday.top_contributor else "-" }}
+                    </div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span>Active Team Yesterday</span>
+                        <div class="kpi-icon indigo">👥</div>
+                    </div>
+                    <div class="kpi-value" id="yd-part-rate" style="color: var(--primary);">{{ stats.yesterday.active_rate_percentage }}%</div>
+                    <div class="kpi-sub" id="yd-part-sub">{{ stats.yesterday.active_team_count }} active out of {{ stats.yesterday.team_size }}</div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span>Yesterday's Status Changes</span>
+                        <div class="kpi-icon purple">📝</div>
+                    </div>
+                    <div class="kpi-value" id="yd-events-count" style="color: var(--accent);">{{ stats.yesterday.total_events_count }}</div>
+                    <div class="kpi-sub">Events logged in #online-report</div>
+                </div>
+            </div>
+
+            <!-- Yesterday Hourly Chart -->
+            <div class="card-panel" style="margin-bottom: 2rem;">
+                <div class="panel-header">
+                    <div class="panel-title"><span>⏮️</span> Yesterday's Hourly Activity Breakdown ({{ stats.yesterday.display_date }})</div>
+                    <a href="/api/export/csv?period=yesterday" class="btn-export" style="font-size: 0.8rem; padding: 6px 12px;">Download Yesterday's CSV</a>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="yesterdayHourlyChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Yesterday Member Table -->
+            <div class="section-header">
+                <div class="section-title">Yesterday's Team Performance & Attendance</div>
+            </div>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Member</th>
+                            <th>Yesterday Online Time</th>
+                            <th>Total Hours</th>
+                            <th>Share %</th>
+                            <th>Status Changes</th>
+                        </tr>
+                    </thead>
+                    <tbody id="yesterdayTableBody">
+                        {% for mem in stats.yesterday.members %}
+                        <tr>
+                            <td>
+                                <span class="leader-rank {% if mem.rank == 1 %}rank-1{% elif mem.rank == 2 %}rank-2{% elif mem.rank == 3 %}rank-3{% else %}rank-other{% endif %}">
+                                    {{ mem.rank }}
+                                </span>
+                            </td>
+                            <td>
+                                <div class="user-cell">
+                                    {% if mem.avatar_url %}
+                                    <img src="{{ mem.avatar_url }}" alt="{{ mem.name }}" class="avatar">
+                                    {% else %}
+                                    <div class="avatar">{{ mem.name[0] | upper }}</div>
+                                    {% endif %}
+                                    <div class="user-names">
+                                        <span class="user-name">{{ mem.name }}</span>
+                                        <span class="user-handle">{{ mem.username }}</span>
+                                    </div>
+                                </div>
+                            </td>
+                            <td>
+                                <span class="time-pill highlight">{{ mem.total_formatted }}</span>
+                            </td>
+                            <td>
+                                <strong>{{ mem.total_hours }}</strong> hrs
+                            </td>
+                            <td>
+                                <div class="progress-bar-bg">
+                                    <div class="progress-bar-fill" style="width: {{ mem.share_percentage }}%;"></div>
+                                </div>
+                                <span style="font-weight: 600; font-size: 0.8rem;">{{ mem.share_percentage }}%</span>
+                            </td>
+                            <td>
+                                <span class="time-pill">{{ mem.events_count }} events</span>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ==================== TAB 4: WEEKLY REPORT ==================== -->
         <div id="pane-weekly" class="tab-pane">
             <div class="kpi-grid">
                 <div class="kpi-card">
@@ -770,7 +1273,7 @@ DASHBOARD_HTML = """
                         <span>7-Day Total Hours</span>
                         <div class="kpi-icon indigo">⏳</div>
                     </div>
-                    <div class="kpi-value" id="wk-total-time" style="color: #818cf8;">{{ stats.weekly.total_server_formatted }}</div>
+                    <div class="kpi-value" id="wk-total-time" style="color: var(--primary);">{{ stats.weekly.total_server_formatted }}</div>
                     <div class="kpi-sub">{{ stats.weekly.total_server_hours }} total hours accumulated</div>
                 </div>
 
@@ -779,7 +1282,7 @@ DASHBOARD_HTML = """
                         <span>Daily Average</span>
                         <div class="kpi-icon green">📊</div>
                     </div>
-                    <div class="kpi-value" id="wk-daily-avg" style="color: #34d399;">{{ stats.weekly.avg_server_daily_formatted }}</div>
+                    <div class="kpi-value" id="wk-daily-avg" style="color: var(--online);">{{ stats.weekly.avg_server_daily_formatted }}</div>
                     <div class="kpi-sub">Across 7 days</div>
                 </div>
 
@@ -788,7 +1291,7 @@ DASHBOARD_HTML = """
                         <span>Top Contributor</span>
                         <div class="kpi-icon amber">👑</div>
                     </div>
-                    <div class="kpi-value" id="wk-top-name" style="font-size: 1.5rem; color: #fbbf24;">
+                    <div class="kpi-value" id="wk-top-name" style="font-size: 1.5rem; color: var(--idle);">
                         {{ stats.weekly.top_contributor.name if stats.weekly.top_contributor else "None" }}
                     </div>
                     <div class="kpi-sub" id="wk-top-time">
@@ -801,7 +1304,7 @@ DASHBOARD_HTML = """
                         <span>Active Team Rate</span>
                         <div class="kpi-icon purple">🎯</div>
                     </div>
-                    <div class="kpi-value" id="wk-part-rate" style="color: #c084fc;">{{ stats.weekly.active_rate_percentage }}%</div>
+                    <div class="kpi-value" id="wk-part-rate" style="color: var(--accent);">{{ stats.weekly.active_rate_percentage }}%</div>
                     <div class="kpi-sub" id="wk-part-sub">{{ stats.weekly.active_team_count }} active out of {{ stats.weekly.team_size }}</div>
                 </div>
             </div>
@@ -834,41 +1337,41 @@ DASHBOARD_HTML = """
                         </tr>
                     </thead>
                     <tbody id="weeklyTableBody">
-                        {% for m in stats.weekly.members %}
+                        {% for mem in stats.weekly.members %}
                         <tr>
                             <td>
-                                <span class="leader-rank {% if m.rank == 1 %}rank-1{% elif m.rank == 2 %}rank-2{% elif m.rank == 3 %}rank-3{% else %}rank-other{% endif %}">
-                                    {{ m.rank }}
+                                <span class="leader-rank {% if mem.rank == 1 %}rank-1{% elif mem.rank == 2 %}rank-2{% elif mem.rank == 3 %}rank-3{% else %}rank-other{% endif %}">
+                                    {{ mem.rank }}
                                 </span>
                             </td>
                             <td>
                                 <div class="user-cell">
-                                    {% if m.avatar_url %}
-                                    <img src="{{ m.avatar_url }}" alt="{{ m.name }}" class="avatar">
+                                    {% if mem.avatar_url %}
+                                    <img src="{{ mem.avatar_url }}" alt="{{ mem.name }}" class="avatar">
                                     {% else %}
-                                    <div class="avatar">{{ m.name[0] | upper }}</div>
+                                    <div class="avatar">{{ mem.name[0] | upper }}</div>
                                     {% endif %}
                                     <div class="user-names">
-                                        <span class="user-name">{{ m.name }}</span>
-                                        <span class="user-handle">{{ m.username }}</span>
+                                        <span class="user-name">{{ mem.name }}</span>
+                                        <span class="user-handle">{{ mem.username }}</span>
                                     </div>
                                 </div>
                             </td>
                             <td>
-                                <span class="time-pill highlight">{{ m.total_formatted }}</span>
-                                <span style="font-size: 0.75rem; color: var(--text-muted); margin-left: 6px;">({{ m.total_hours }} hrs)</span>
+                                <span class="time-pill highlight">{{ mem.total_formatted }}</span>
+                                <span style="font-size: 0.75rem; color: var(--text-muted); margin-left: 6px;">({{ mem.total_hours }} hrs)</span>
                             </td>
                             <td>
-                                <span class="time-pill">{{ m.avg_daily_formatted }}</span>
+                                <span class="time-pill">{{ mem.avg_daily_formatted }}</span>
                             </td>
                             <td>
-                                <strong>{{ m.active_days }}</strong> / 7 Days
+                                <strong>{{ mem.active_days }}</strong> / 7 Days
                             </td>
                             <td>
                                 <div class="progress-bar-bg">
-                                    <div class="progress-bar-fill" style="width: {{ m.active_days_percentage }}%;"></div>
+                                    <div class="progress-bar-fill" style="width: {{ mem.active_days_percentage }}%;"></div>
                                 </div>
-                                <span style="font-weight: 600; font-size: 0.8rem;">{{ m.active_days_percentage }}%</span>
+                                <span style="font-weight: 600; font-size: 0.8rem;">{{ mem.active_days_percentage }}%</span>
                             </td>
                         </tr>
                         {% endfor %}
@@ -877,7 +1380,7 @@ DASHBOARD_HTML = """
             </div>
         </div>
 
-        <!-- ==================== TAB 3: MONTHLY REPORT ==================== -->
+        <!-- ==================== TAB 5: MONTHLY REPORT ==================== -->
         <div id="pane-monthly" class="tab-pane">
             <div class="kpi-grid">
                 <div class="kpi-card">
@@ -885,7 +1388,7 @@ DASHBOARD_HTML = """
                         <span>30-Day Total Hours</span>
                         <div class="kpi-icon purple">🗓️</div>
                     </div>
-                    <div class="kpi-value" id="mo-total-time" style="color: #c084fc;">{{ stats.monthly.total_server_formatted }}</div>
+                    <div class="kpi-value" id="mo-total-time" style="color: var(--accent);">{{ stats.monthly.total_server_formatted }}</div>
                     <div class="kpi-sub">{{ stats.monthly.total_server_hours }} total hours recorded</div>
                 </div>
 
@@ -894,7 +1397,7 @@ DASHBOARD_HTML = """
                         <span>Daily Average</span>
                         <div class="kpi-icon green">📈</div>
                     </div>
-                    <div class="kpi-value" id="mo-daily-avg" style="color: #34d399;">{{ stats.monthly.avg_server_daily_formatted }}</div>
+                    <div class="kpi-value" id="mo-daily-avg" style="color: var(--online);">{{ stats.monthly.avg_server_daily_formatted }}</div>
                     <div class="kpi-sub">Across 30 days</div>
                 </div>
 
@@ -903,7 +1406,7 @@ DASHBOARD_HTML = """
                         <span>Monthly Top Contributor</span>
                         <div class="kpi-icon amber">🌟</div>
                     </div>
-                    <div class="kpi-value" id="mo-top-name" style="font-size: 1.5rem; color: #fbbf24;">
+                    <div class="kpi-value" id="mo-top-name" style="font-size: 1.5rem; color: var(--idle);">
                         {{ stats.monthly.top_contributor.name if stats.monthly.top_contributor else "None" }}
                     </div>
                     <div class="kpi-sub" id="mo-top-time">
@@ -916,7 +1419,7 @@ DASHBOARD_HTML = """
                         <span>Active Team Size</span>
                         <div class="kpi-icon indigo">👥</div>
                     </div>
-                    <div class="kpi-value" id="mo-part-rate" style="color: #818cf8;">{{ stats.monthly.active_rate_percentage }}%</div>
+                    <div class="kpi-value" id="mo-part-rate" style="color: var(--primary);">{{ stats.monthly.active_rate_percentage }}%</div>
                     <div class="kpi-sub" id="mo-part-sub">{{ stats.monthly.active_team_count }} active out of {{ stats.monthly.team_size }}</div>
                 </div>
             </div>
@@ -949,41 +1452,41 @@ DASHBOARD_HTML = """
                         </tr>
                     </thead>
                     <tbody id="monthlyTableBody">
-                        {% for m in stats.monthly.members %}
+                        {% for mem in stats.monthly.members %}
                         <tr>
                             <td>
-                                <span class="leader-rank {% if m.rank == 1 %}rank-1{% elif m.rank == 2 %}rank-2{% elif m.rank == 3 %}rank-3{% else %}rank-other{% endif %}">
-                                    {{ m.rank }}
+                                <span class="leader-rank {% if mem.rank == 1 %}rank-1{% elif mem.rank == 2 %}rank-2{% elif mem.rank == 3 %}rank-3{% else %}rank-other{% endif %}">
+                                    {{ mem.rank }}
                                 </span>
                             </td>
                             <td>
                                 <div class="user-cell">
-                                    {% if m.avatar_url %}
-                                    <img src="{{ m.avatar_url }}" alt="{{ m.name }}" class="avatar">
+                                    {% if mem.avatar_url %}
+                                    <img src="{{ mem.avatar_url }}" alt="{{ mem.name }}" class="avatar">
                                     {% else %}
-                                    <div class="avatar">{{ m.name[0] | upper }}</div>
+                                    <div class="avatar">{{ mem.name[0] | upper }}</div>
                                     {% endif %}
                                     <div class="user-names">
-                                        <span class="user-name">{{ m.name }}</span>
-                                        <span class="user-handle">{{ m.username }}</span>
+                                        <span class="user-name">{{ mem.name }}</span>
+                                        <span class="user-handle">{{ mem.username }}</span>
                                     </div>
                                 </div>
                             </td>
                             <td>
-                                <span class="time-pill highlight">{{ m.total_formatted }}</span>
-                                <span style="font-size: 0.75rem; color: var(--text-muted); margin-left: 6px;">({{ m.total_hours }} hrs)</span>
+                                <span class="time-pill highlight">{{ mem.total_formatted }}</span>
+                                <span style="font-size: 0.75rem; color: var(--text-muted); margin-left: 6px;">({{ mem.total_hours }} hrs)</span>
                             </td>
                             <td>
-                                <span class="time-pill">{{ m.avg_daily_formatted }}</span>
+                                <span class="time-pill">{{ mem.avg_daily_formatted }}</span>
                             </td>
                             <td>
-                                <strong>{{ m.active_days }}</strong> / 30 Days
+                                <strong>{{ mem.active_days }}</strong> / 30 Days
                             </td>
                             <td>
                                 <div class="progress-bar-bg">
-                                    <div class="progress-bar-fill" style="width: {{ m.active_days_percentage }}%;"></div>
+                                    <div class="progress-bar-fill" style="width: {{ mem.active_days_percentage }}%;"></div>
                                 </div>
-                                <span style="font-weight: 600; font-size: 0.8rem;">{{ m.active_days_percentage }}%</span>
+                                <span style="font-weight: 600; font-size: 0.8rem;">{{ mem.active_days_percentage }}%</span>
                             </td>
                         </tr>
                         {% endfor %}
@@ -992,7 +1495,201 @@ DASHBOARD_HTML = """
             </div>
         </div>
 
-        <!-- ==================== TAB 4: LIVE MONITOR ==================== -->
+        <!-- ==================== TAB 6: CUSTOM REPORT (DATE & TEAM FILTER) ==================== -->
+        <div id="pane-report" class="tab-pane">
+            <!-- Filter Bar -->
+            <div class="report-filter-bar">
+                <div class="report-inputs-group">
+                    <div>
+                        <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 4px; font-weight: 600;">SELECT DATE</label>
+                        <input type="date" id="reportDatePicker" class="custom-date-input" value="{{ stats.today.date }}" onchange="handleDateChange(this.value)">
+                    </div>
+
+                    <div>
+                        <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 4px; font-weight: 600;">FILTER TEAM / MEMBER</label>
+                        <select id="reportMemberFilter" class="custom-select" onchange="handleMemberFilterChange(this.value)">
+                            <option value="all">👥 All Team Members</option>
+                            {% for mem in stats.members %}
+                            <option value="{{ mem.id }}">{{ mem.name }} (@{{ mem.username }})</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="quick-date-pills" style="margin-top: 18px;">
+                        <button class="date-pill active" onclick="setQuickDate(0, this)">Today</button>
+                        <button class="date-pill" onclick="setQuickDate(1, this)">Yesterday</button>
+                        <button class="date-pill" onclick="setQuickDate(2, this)">2d Ago</button>
+                        <button class="date-pill" onclick="setQuickDate(3, this)">3d Ago</button>
+                        <button class="date-pill" onclick="setQuickDate(7, this)">7d Ago</button>
+                    </div>
+                </div>
+
+                <div style="display: flex; gap: 8px; align-items: center; margin-top: 10px;">
+                    <button class="btn-sync" id="btn-sync-channel" onclick="syncChannelHistoryNow()" title="Scan & parse messages from Discord #online-report channel">
+                        <span>🔄</span> Sync Discord Channel
+                    </button>
+                    <a href="/api/export/csv?period=today" id="btn-report-export-csv" class="btn-export" style="font-size: 0.825rem; padding: 8px 14px;">
+                        📥 Download Day CSV
+                    </a>
+                </div>
+            </div>
+
+            <!-- Date Header -->
+            <div style="margin-bottom: 1.5rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;">
+                <div>
+                    <h2 id="reportDateHeading" style="font-family: 'Outfit', sans-serif; font-size: 1.4rem; font-weight: 700; color: var(--text-main);">
+                        {{ stats.today.display_date }}
+                    </h2>
+                    <div id="reportSubheading" style="font-size: 0.85rem; color: var(--text-muted); margin-top: 2px;">
+                        Showing presence statistics from Discord channel #online-report
+                    </div>
+                </div>
+                <div id="reportFilteredMemberBadge" style="display: none;" class="status-badge">
+                    <span>👤 Filtered: <strong id="reportFilteredMemberName"></strong></span>
+                    <button onclick="clearMemberFilter()" style="background: none; border: none; color: var(--dnd); cursor: pointer; font-weight: bold; margin-left: 6px;">✕</button>
+                </div>
+            </div>
+
+            <!-- Report KPI Cards -->
+            <div class="kpi-grid">
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span>Total Tracked Hours</span>
+                        <div class="kpi-icon indigo">⏳</div>
+                    </div>
+                    <div class="kpi-value" id="rep-total-time" style="color: var(--primary);">{{ stats.today.total_server_formatted }}</div>
+                    <div class="kpi-sub" id="rep-total-hrs">{{ stats.today.total_server_hours }} total hours</div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span>Active Team Members</span>
+                        <div class="kpi-icon green">👥</div>
+                    </div>
+                    <div class="kpi-value" id="rep-active-count" style="color: var(--online);">{{ stats.today.active_team_count }}</div>
+                    <div class="kpi-sub" id="rep-active-rate">{{ stats.today.active_rate_percentage }}% participation (out of {{ stats.today.team_size }})</div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span>Top Performer on Date</span>
+                        <div class="kpi-icon amber">👑</div>
+                    </div>
+                    <div class="kpi-value" id="rep-top-name" style="font-size: 1.5rem; color: var(--idle);">
+                        {{ stats.today.top_contributor.name if stats.today.top_contributor else "None" }}
+                    </div>
+                    <div class="kpi-sub" id="rep-top-time">
+                        {{ stats.today.top_contributor.total_formatted if stats.today.top_contributor else "-" }}
+                    </div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-header">
+                        <span>Status Events Recorded</span>
+                        <div class="kpi-icon purple">📝</div>
+                    </div>
+                    <div class="kpi-value" id="rep-events-count" style="color: var(--accent);">{{ stats.today.total_events_count }}</div>
+                    <div class="kpi-sub">Online / offline transitions</div>
+                </div>
+            </div>
+
+            <!-- Report Chart -->
+            <div class="card-panel" style="margin-bottom: 2rem;">
+                <div class="panel-header">
+                    <div class="panel-title"><span>📊</span> 24-Hour Activity & Event Distribution</div>
+                    <span id="reportChartSub" style="font-size: 0.8rem; color: var(--text-muted);">Hourly event activity across 00:00 - 23:00</span>
+                </div>
+                <div class="chart-wrapper">
+                    <canvas id="reportHourlyChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Member Performance Table -->
+            <div class="section-header">
+                <div class="section-title">Team Performance on Selected Date</div>
+            </div>
+            <div class="table-container" style="margin-bottom: 2rem;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Member</th>
+                            <th>Online Time on Date</th>
+                            <th>Total Hours</th>
+                            <th>Share %</th>
+                            <th>Status Changes</th>
+                        </tr>
+                    </thead>
+                    <tbody id="reportTableBody">
+                        {% for mem in stats.today.members %}
+                        <tr>
+                            <td>
+                                <span class="leader-rank {% if mem.rank == 1 %}rank-1{% elif mem.rank == 2 %}rank-2{% elif mem.rank == 3 %}rank-3{% else %}rank-other{% endif %}">
+                                    {{ mem.rank }}
+                                </span>
+                            </td>
+                            <td>
+                                <div class="user-cell">
+                                    {% if mem.avatar_url %}
+                                    <img src="{{ mem.avatar_url }}" alt="{{ mem.name }}" class="avatar">
+                                    {% else %}
+                                    <div class="avatar">{{ mem.name[0] | upper }}</div>
+                                    {% endif %}
+                                    <div class="user-names">
+                                        <span class="user-name">{{ mem.name }}</span>
+                                        <span class="user-handle">{{ mem.username }}</span>
+                                    </div>
+                                </div>
+                            </td>
+                            <td>
+                                <span class="time-pill highlight">{{ mem.total_formatted }}</span>
+                            </td>
+                            <td>
+                                <strong>{{ mem.total_hours }}</strong> hrs
+                            </td>
+                            <td>
+                                <div class="progress-bar-bg">
+                                    <div class="progress-bar-fill" style="width: {{ mem.share_percentage }}%;"></div>
+                                </div>
+                                <span style="font-weight: 600; font-size: 0.8rem;">{{ mem.share_percentage }}%</span>
+                            </td>
+                            <td>
+                                <span class="time-pill">{{ mem.events_count }} events</span>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Timeline Event Feed -->
+            <div class="timeline-container">
+                <div class="panel-header">
+                    <div class="panel-title"><span>📜</span> Detailed Status Change Timeline (from #online-report)</div>
+                    <span style="font-size: 0.8rem; color: var(--text-muted);" id="timelineCountText">
+                        {{ stats.today.events | length }} events logged
+                    </span>
+                </div>
+                <div class="timeline-list" id="reportTimelineList">
+                    {% for ev in stats.today.events %}
+                    <div class="timeline-item">
+                        <div class="timeline-left">
+                            <span class="badge-status {{ ev.type }}">{{ ev.type }}</span>
+                            <span class="timeline-time">{{ ev.time_str }}</span>
+                            <span class="timeline-body"><strong>{{ ev.name }}</strong>: {{ ev.text }}</span>
+                        </div>
+                        {% if ev.duration_fmt %}
+                        <span class="time-pill highlight">{{ ev.duration_fmt }}</span>
+                        {% endif %}
+                    </div>
+                    {% else %}
+                    <div style="color: var(--text-muted); font-size: 0.85rem; padding: 1.5rem; text-align: center;">No status changes recorded for this date.</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- ==================== TAB 7: LIVE MONITOR ==================== -->
         <div id="pane-live" class="tab-pane">
             <div class="section-header">
                 <div class="section-title">Real-Time Presence Tracker</div>
@@ -1016,6 +1713,7 @@ DASHBOARD_HTML = """
                             <th>Member</th>
                             <th>Status</th>
                             <th>Online Today</th>
+                            <th>Yesterday</th>
                             <th>Week (7d)</th>
                             <th>Month (30d)</th>
                             <th>Current Session</th>
@@ -1023,41 +1721,44 @@ DASHBOARD_HTML = """
                         </tr>
                     </thead>
                     <tbody id="membersBody">
-                        {% for m in stats.members %}
-                        <tr class="member-row" data-name="{{ m.name | lower }}" data-username="{{ m.username | lower }}" data-status="{{ m.status }}">
+                        {% for mem in stats.members %}
+                        <tr class="member-row" data-name="{{ mem.name | lower }}" data-username="{{ mem.username | lower }}" data-status="{{ mem.status }}">
                             <td>
                                 <div class="user-cell">
-                                    {% if m.avatar_url %}
-                                    <img src="{{ m.avatar_url }}" alt="{{ m.name }}" class="avatar">
+                                    {% if mem.avatar_url %}
+                                    <img src="{{ mem.avatar_url }}" alt="{{ mem.name }}" class="avatar">
                                     {% else %}
-                                    <div class="avatar">{{ m.name[0] | upper }}</div>
+                                    <div class="avatar">{{ mem.name[0] | upper }}</div>
                                     {% endif %}
                                     <div class="user-names">
-                                        <span class="user-name">{{ m.name }}</span>
-                                        <span class="user-handle">{{ m.username }}</span>
+                                        <span class="user-name">{{ mem.name }}</span>
+                                        <span class="user-handle">{{ mem.username }}</span>
                                     </div>
                                 </div>
                             </td>
                             <td>
-                                <span class="badge-status {{ m.status }}">
-                                    <span class="status-dot {{ m.status }}"></span>
-                                    {{ m.status }}
+                                <span class="badge-status {{ mem.status }}">
+                                    <span class="status-dot {{ mem.status }}"></span>
+                                    {{ mem.status }}
                                 </span>
                             </td>
                             <td>
-                                <span class="time-pill highlight">{{ m.online_today_formatted }}</span>
+                                <span class="time-pill highlight">{{ mem.online_today_formatted }}</span>
                             </td>
                             <td>
-                                <span class="time-pill">{{ m.online_week_formatted }}</span>
+                                <span class="time-pill">{{ mem.online_yesterday_formatted }}</span>
                             </td>
                             <td>
-                                <span class="time-pill">{{ m.online_month_formatted }}</span>
+                                <span class="time-pill">{{ mem.online_week_formatted }}</span>
                             </td>
                             <td>
-                                <span class="time-pill">{{ m.current_session_formatted }}</span>
+                                <span class="time-pill">{{ mem.online_month_formatted }}</span>
+                            </td>
+                            <td>
+                                <span class="time-pill">{{ mem.current_session_formatted }}</span>
                             </td>
                             <td style="color: var(--text-muted); font-size: 0.8rem;">
-                                {{ m.last_change_time }}
+                                {{ mem.last_change_time }}
                             </td>
                         </tr>
                         {% endfor %}
@@ -1075,7 +1776,7 @@ DASHBOARD_HTML = """
         </div>
 
         <footer>
-            Status Bot • Executive Discord Presence, Weekly & Monthly Reporting System
+            Status Bot • Executive Discord Presence, Daily, Weekly & Monthly Reporting System
         </footer>
     </div>
 
@@ -1083,11 +1784,66 @@ DASHBOARD_HTML = """
     <script>
         let currentFilter = 'all';
         let currentTab = 'overview';
-        let overviewChart, weeklyChart, monthlyChart;
+        let selectedReportDate = '{{ stats.today.date }}';
+        let selectedReportMember = 'all';
 
-        // Initialize Data passed from Flask
+        let overviewChart, todayChart, yesterdayChart, weeklyChart, monthlyChart, reportChart;
+
+        // Data from Flask
         const initialWeeklyTrends = {{ stats.weekly.daily_trends | tojson }};
         const initialMonthlyTrends = {{ stats.monthly.daily_trends | tojson }};
+        const initialTodayHourly = {{ stats.today.hourly_distribution | tojson }};
+        const initialYesterdayHourly = {{ stats.yesterday.hourly_distribution | tojson }};
+
+        // Theme Management
+        function setTheme(theme) {
+            localStorage.setItem('statusbot_theme', theme);
+            document.documentElement.setAttribute('data-theme-setting', theme);
+            
+            let effectiveTheme = theme;
+            if (theme === 'auto') {
+                effectiveTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+            document.documentElement.setAttribute('data-theme', effectiveTheme);
+            updateThemeUI(theme);
+            updateChartsTheme(effectiveTheme);
+        }
+
+        function updateThemeUI(selectedSetting) {
+            document.querySelectorAll('.theme-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.themeVal === selectedSetting);
+            });
+        }
+
+        // Listen for OS color scheme change when in 'auto' mode
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+            const currentSetting = localStorage.getItem('statusbot_theme') || 'auto';
+            if (currentSetting === 'auto') {
+                const effective = e.matches ? 'dark' : 'light';
+                document.documentElement.setAttribute('data-theme', effective);
+                updateChartsTheme(effective);
+            }
+        });
+
+        function updateChartsTheme(theme) {
+            const isDark = theme === 'dark';
+            const gridColor = isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)';
+            const textColor = isDark ? '#94a3b8' : '#64748b';
+
+            Chart.defaults.color = textColor;
+
+            [overviewChart, todayChart, yesterdayChart, weeklyChart, monthlyChart, reportChart].forEach(chart => {
+                if (!chart) return;
+                if (chart.options.scales && chart.options.scales.y) {
+                    chart.options.scales.y.grid.color = gridColor;
+                    chart.options.scales.y.ticks.color = textColor;
+                }
+                if (chart.options.scales && chart.options.scales.x) {
+                    chart.options.scales.x.ticks.color = textColor;
+                }
+                chart.update('none');
+            });
+        }
 
         function switchTab(tabId) {
             currentTab = tabId;
@@ -1101,9 +1857,18 @@ DASHBOARD_HTML = """
 
             // Update CSV export button href based on tab
             const exportBtn = document.getElementById('btn-export-csv');
-            if (tabId === 'monthly') {
+            if (tabId === 'today') {
+                exportBtn.href = '/api/export/csv?period=today';
+                exportBtn.textContent = '📥 Export Today CSV';
+            } else if (tabId === 'yesterday') {
+                exportBtn.href = '/api/export/csv?period=yesterday';
+                exportBtn.textContent = '📥 Export Yesterday CSV';
+            } else if (tabId === 'monthly') {
                 exportBtn.href = '/api/export/csv?period=monthly';
                 exportBtn.textContent = '📥 Export Monthly CSV';
+            } else if (tabId === 'report') {
+                exportBtn.href = `/api/export/csv?period=${selectedReportDate}`;
+                exportBtn.textContent = '📥 Export Day CSV';
             } else {
                 exportBtn.href = '/api/export/csv?period=weekly';
                 exportBtn.textContent = '📥 Export Weekly CSV';
@@ -1111,8 +1876,11 @@ DASHBOARD_HTML = """
 
             // Trigger chart resize if needed
             if (tabId === 'overview' && overviewChart) overviewChart.resize();
+            if (tabId === 'today' && todayChart) todayChart.resize();
+            if (tabId === 'yesterday' && yesterdayChart) yesterdayChart.resize();
             if (tabId === 'weekly' && weeklyChart) weeklyChart.resize();
             if (tabId === 'monthly' && monthlyChart) monthlyChart.resize();
+            if (tabId === 'report' && reportChart) reportChart.resize();
         }
 
         function setFilter(filter) {
@@ -1139,9 +1907,170 @@ DASHBOARD_HTML = """
             });
         }
 
+        // Quick date picker chips
+        function setQuickDate(daysAgo, btnElem) {
+            document.querySelectorAll('.date-pill').forEach(b => b.classList.remove('active'));
+            if (btnElem) btnElem.classList.add('active');
+
+            const d = new Date();
+            d.setDate(d.getDate() - daysAgo);
+            const dateStr = d.toISOString().split('T')[0];
+            
+            document.getElementById('reportDatePicker').value = dateStr;
+            handleDateChange(dateStr);
+        }
+
+        function handleDateChange(val) {
+            selectedReportDate = val;
+            document.getElementById('btn-report-export-csv').href = `/api/export/csv?period=${selectedReportDate}`;
+            fetchCustomReport();
+        }
+
+        function handleMemberFilterChange(val) {
+            selectedReportMember = val;
+            const selectElem = document.getElementById('reportMemberFilter');
+            const selectedText = selectElem.options[selectElem.selectedIndex].text;
+            
+            const badge = document.getElementById('reportFilteredMemberBadge');
+            const nameSpan = document.getElementById('reportFilteredMemberName');
+            
+            if (val !== 'all') {
+                badge.style.display = 'inline-flex';
+                nameSpan.textContent = selectedText;
+            } else {
+                badge.style.display = 'none';
+            }
+            fetchCustomReport();
+        }
+
+        function clearMemberFilter() {
+            document.getElementById('reportMemberFilter').value = 'all';
+            handleMemberFilterChange('all');
+        }
+
+        async function syncChannelHistoryNow() {
+            const btn = document.getElementById('btn-sync-channel');
+            btn.classList.add('spinning');
+            btn.innerHTML = '<span>🔄</span> Syncing...';
+            try {
+                const res = await fetch('/api/sync', { method: 'POST' });
+                const data = await res.json();
+                setTimeout(async () => {
+                    await refreshStats();
+                    await fetchCustomReport();
+                    btn.classList.remove('spinning');
+                    btn.innerHTML = '<span>✓</span> Synced!';
+                    setTimeout(() => {
+                        btn.innerHTML = '<span>🔄</span> Sync Discord Channel';
+                    }, 2500);
+                }, 1500);
+            } catch (err) {
+                btn.classList.remove('spinning');
+                btn.innerHTML = '<span>⚠️</span> Error';
+            }
+        }
+
+        // Fetch custom day stats via AJAX
+        async function fetchCustomReport() {
+            try {
+                const url = `/api/stats/day?date=${selectedReportDate}&member=${selectedReportMember}`;
+                const res = await fetch(url);
+                if (!res.ok) return;
+                const data = await res.json();
+
+                // Update Headings
+                document.getElementById('reportDateHeading').textContent = data.display_date;
+                document.getElementById('rep-total-time').textContent = data.total_server_formatted;
+                document.getElementById('rep-total-hrs').textContent = `${data.total_server_hours} total hours`;
+                document.getElementById('rep-active-count').textContent = data.active_team_count;
+                document.getElementById('rep-active-rate').textContent = `${data.active_rate_percentage}% participation (out of ${data.team_size})`;
+                
+                if (data.top_contributor) {
+                    document.getElementById('rep-top-name').textContent = data.top_contributor.name;
+                    document.getElementById('rep-top-time').textContent = data.top_contributor.total_formatted;
+                } else {
+                    document.getElementById('rep-top-name').textContent = 'None';
+                    document.getElementById('rep-top-time').textContent = '-';
+                }
+                document.getElementById('rep-events-count').textContent = data.total_events_count;
+
+                // Update Hourly Chart
+                if (reportChart && data.hourly_distribution) {
+                    reportChart.data.labels = data.hourly_distribution.map(h => h.hour);
+                    reportChart.data.datasets[0].data = data.hourly_distribution.map(h => h.events_count);
+                    reportChart.data.datasets[1].data = data.hourly_distribution.map(h => h.active_members_count);
+                    reportChart.update();
+                }
+
+                // Update Table
+                const tbody = document.getElementById('reportTableBody');
+                if (tbody && data.members) {
+                    tbody.innerHTML = data.members.map((mem, idx) => {
+                        const rankClass = mem.rank === 1 ? 'rank-1' : (mem.rank === 2 ? 'rank-2' : (mem.rank === 3 ? 'rank-3' : 'rank-other'));
+                        const avatarHtml = mem.avatar_url 
+                            ? `<img src="${mem.avatar_url}" alt="${mem.name}" class="avatar">`
+                            : `<div class="avatar">${(mem.name[0] || '?').toUpperCase()}</div>`;
+
+                        return `
+                        <tr>
+                            <td><span class="leader-rank ${rankClass}">${mem.rank}</span></td>
+                            <td>
+                                <div class="user-cell">
+                                    ${avatarHtml}
+                                    <div class="user-names">
+                                        <span class="user-name">${mem.name}</span>
+                                        <span class="user-handle">${mem.username}</span>
+                                    </div>
+                                </div>
+                            </td>
+                            <td><span class="time-pill highlight">${mem.total_formatted}</span></td>
+                            <td><strong>${mem.total_hours}</strong> hrs</td>
+                            <td>
+                                <div class="progress-bar-bg">
+                                    <div class="progress-bar-fill" style="width: ${mem.share_percentage}%;"></div>
+                                </div>
+                                <span style="font-weight: 600; font-size: 0.8rem;">${mem.share_percentage}%</span>
+                            </td>
+                            <td><span class="time-pill">${mem.events_count} events</span></td>
+                        </tr>`;
+                    }).join('') || '<tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 2rem;">No member data recorded for this date.</td></tr>';
+                }
+
+                // Update Timeline List
+                const timelineContainer = document.getElementById('reportTimelineList');
+                const countText = document.getElementById('timelineCountText');
+                if (countText) countText.textContent = `${data.events ? data.events.length : 0} events logged`;
+
+                if (timelineContainer) {
+                    if (data.events && data.events.length > 0) {
+                        timelineContainer.innerHTML = data.events.map(ev => `
+                            <div class="timeline-item">
+                                <div class="timeline-left">
+                                    <span class="badge-status ${ev.type}">${ev.type}</span>
+                                    <span class="timeline-time">${ev.time_str}</span>
+                                    <span class="timeline-body"><strong>${ev.name}</strong>: ${ev.text}</span>
+                                </div>
+                                ${ev.duration_fmt ? `<span class="time-pill highlight">${ev.duration_fmt}</span>` : ''}
+                            </div>
+                        `).join('');
+                    } else {
+                        timelineContainer.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem; padding: 1.5rem; text-align: center;">No status changes recorded in #online-report for this date.</div>';
+                    }
+                }
+
+            } catch (err) {
+                console.error('Error fetching custom report:', err);
+            }
+        }
+
         // Initialize Charts
         function initCharts() {
-            Chart.defaults.color = '#94a3b8';
+            const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+            const isDark = currentTheme === 'dark';
+            const gridColor = isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)';
+            const textColor = isDark ? '#94a3b8' : '#64748b';
+
+            Chart.defaults.color = textColor;
             Chart.defaults.font.family = "'Inter', sans-serif";
 
             // 1. Overview Weekly Chart (Line Area)
@@ -1165,27 +2094,87 @@ DASHBOARD_HTML = """
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            callbacks: {
-                                label: ctx => `${ctx.parsed.y} Hours`
-                            }
-                        }
-                    },
+                    plugins: { legend: { display: false } },
                     scales: {
-                        y: {
-                            beginAtZero: true,
-                            grid: { color: 'rgba(255, 255, 255, 0.05)' }
-                        },
-                        x: {
-                            grid: { display: false }
-                        }
+                        y: { beginAtZero: true, grid: { color: gridColor }, ticks: { color: textColor } },
+                        x: { grid: { display: false }, ticks: { color: textColor } }
                     }
                 }
             });
 
-            // 2. Weekly Bar Chart
+            // 2. Today Hourly Chart
+            const ctxTd = document.getElementById('todayHourlyChart').getContext('2d');
+            todayChart = new Chart(ctxTd, {
+                type: 'bar',
+                data: {
+                    labels: initialTodayHourly.map(h => h.hour),
+                    datasets: [
+                        {
+                            label: 'Status Changes Logged',
+                            data: initialTodayHourly.map(h => h.events_count),
+                            backgroundColor: 'rgba(16, 185, 129, 0.7)',
+                            borderColor: '#10b981',
+                            borderWidth: 1,
+                            borderRadius: 6
+                        },
+                        {
+                            label: 'Active Members in Hour',
+                            data: initialTodayHourly.map(h => h.active_members_count),
+                            backgroundColor: 'rgba(99, 102, 241, 0.5)',
+                            borderColor: '#6366f1',
+                            borderWidth: 1,
+                            borderRadius: 6
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: true, position: 'top' } },
+                    scales: {
+                        y: { beginAtZero: true, ticks: { stepSize: 1, color: textColor }, grid: { color: gridColor } },
+                        x: { grid: { display: false }, ticks: { color: textColor } }
+                    }
+                }
+            });
+
+            // 3. Yesterday Hourly Chart
+            const ctxYd = document.getElementById('yesterdayHourlyChart').getContext('2d');
+            yesterdayChart = new Chart(ctxYd, {
+                type: 'bar',
+                data: {
+                    labels: initialYesterdayHourly.map(h => h.hour),
+                    datasets: [
+                        {
+                            label: 'Status Changes Logged',
+                            data: initialYesterdayHourly.map(h => h.events_count),
+                            backgroundColor: 'rgba(245, 158, 11, 0.7)',
+                            borderColor: '#f59e0b',
+                            borderWidth: 1,
+                            borderRadius: 6
+                        },
+                        {
+                            label: 'Active Members in Hour',
+                            data: initialYesterdayHourly.map(h => h.active_members_count),
+                            backgroundColor: 'rgba(99, 102, 241, 0.5)',
+                            borderColor: '#6366f1',
+                            borderWidth: 1,
+                            borderRadius: 6
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: true, position: 'top' } },
+                    scales: {
+                        y: { beginAtZero: true, ticks: { stepSize: 1, color: textColor }, grid: { color: gridColor } },
+                        x: { grid: { display: false }, ticks: { color: textColor } }
+                    }
+                }
+            });
+
+            // 4. Weekly Bar Chart
             const ctxWk = document.getElementById('weeklyBarChart').getContext('2d');
             weeklyChart = new Chart(ctxWk, {
                 type: 'bar',
@@ -1203,27 +2192,15 @@ DASHBOARD_HTML = """
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            callbacks: {
-                                label: ctx => `${ctx.parsed.y} Total Hours`
-                            }
-                        }
-                    },
+                    plugins: { legend: { display: false } },
                     scales: {
-                        y: {
-                            beginAtZero: true,
-                            grid: { color: 'rgba(255, 255, 255, 0.05)' }
-                        },
-                        x: {
-                            grid: { display: false }
-                        }
+                        y: { beginAtZero: true, grid: { color: gridColor }, ticks: { color: textColor } },
+                        x: { grid: { display: false }, ticks: { color: textColor } }
                     }
                 }
             });
 
-            // 3. Monthly Line Trend Chart
+            // 5. Monthly Line Trend Chart
             const ctxMo = document.getElementById('monthlyTrendChart').getContext('2d');
             monthlyChart = new Chart(ctxMo, {
                 type: 'line',
@@ -1244,23 +2221,46 @@ DASHBOARD_HTML = """
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            callbacks: {
-                                label: ctx => `${ctx.parsed.y} Hours`
-                            }
-                        }
-                    },
+                    plugins: { legend: { display: false } },
                     scales: {
-                        y: {
-                            beginAtZero: true,
-                            grid: { color: 'rgba(255, 255, 255, 0.05)' }
+                        y: { beginAtZero: true, grid: { color: gridColor }, ticks: { color: textColor } },
+                        x: { grid: { display: false }, ticks: { maxTicksLimit: 10, color: textColor } }
+                    }
+                }
+            });
+
+            // 6. Report Hourly Chart
+            const ctxRep = document.getElementById('reportHourlyChart').getContext('2d');
+            reportChart = new Chart(ctxRep, {
+                type: 'bar',
+                data: {
+                    labels: initialTodayHourly.map(h => h.hour),
+                    datasets: [
+                        {
+                            label: 'Status Changes Logged',
+                            data: initialTodayHourly.map(h => h.events_count),
+                            backgroundColor: 'rgba(99, 102, 241, 0.7)',
+                            borderColor: '#6366f1',
+                            borderWidth: 1,
+                            borderRadius: 6
                         },
-                        x: {
-                            grid: { display: false },
-                            ticks: { maxTicksLimit: 10 }
+                        {
+                            label: 'Active Members in Hour',
+                            data: initialTodayHourly.map(h => h.active_members_count),
+                            backgroundColor: 'rgba(16, 185, 129, 0.6)',
+                            borderColor: '#10b981',
+                            borderWidth: 1,
+                            borderRadius: 6
                         }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: true, position: 'top' } },
+                    scales: {
+                        y: { beginAtZero: true, ticks: { stepSize: 1, color: textColor }, grid: { color: gridColor } },
+                        x: { grid: { display: false }, ticks: { color: textColor } }
                     }
                 }
             });
@@ -1282,32 +2282,22 @@ DASHBOARD_HTML = """
                 // Overview KPIs
                 document.getElementById('ov-today-time').textContent = stats.total_server_online_fmt;
                 document.getElementById('ov-online-count').textContent = stats.online_count;
+                document.getElementById('ov-yesterday-time').textContent = stats.yesterday.total_server_formatted;
                 document.getElementById('ov-week-time').textContent = stats.weekly.total_server_formatted;
                 document.getElementById('ov-week-avg').textContent = stats.weekly.avg_server_daily_formatted;
                 document.getElementById('ov-month-time').textContent = stats.monthly.total_server_formatted;
                 document.getElementById('ov-month-avg').textContent = stats.monthly.avg_server_daily_formatted;
-                document.getElementById('ov-active-rate').textContent = stats.weekly.active_rate_percentage + '%';
-                document.getElementById('ov-active-count').textContent = stats.weekly.active_team_count;
 
-                // Weekly KPIs
-                document.getElementById('wk-total-time').textContent = stats.weekly.total_server_formatted;
-                document.getElementById('wk-daily-avg').textContent = stats.weekly.avg_server_daily_formatted;
-                if (stats.weekly.top_contributor) {
-                    document.getElementById('wk-top-name').textContent = stats.weekly.top_contributor.name;
-                    document.getElementById('wk-top-time').textContent = stats.weekly.top_contributor.total_formatted;
+                // Today KPIs
+                document.getElementById('td-total-time').textContent = stats.today.total_server_formatted;
+                document.getElementById('td-total-hrs').textContent = `${stats.today.total_server_hours} hours accumulated today`;
+                if (stats.today.top_contributor) {
+                    document.getElementById('td-top-name').textContent = stats.today.top_contributor.name;
+                    document.getElementById('td-top-time').textContent = stats.today.top_contributor.total_formatted;
                 }
-                document.getElementById('wk-part-rate').textContent = stats.weekly.active_rate_percentage + '%';
-                document.getElementById('wk-part-sub').textContent = `${stats.weekly.active_team_count} active out of ${stats.weekly.team_size}`;
-
-                // Monthly KPIs
-                document.getElementById('mo-total-time').textContent = stats.monthly.total_server_formatted;
-                document.getElementById('mo-daily-avg').textContent = stats.monthly.avg_server_daily_formatted;
-                if (stats.monthly.top_contributor) {
-                    document.getElementById('mo-top-name').textContent = stats.monthly.top_contributor.name;
-                    document.getElementById('mo-top-time').textContent = stats.monthly.top_contributor.total_formatted;
-                }
-                document.getElementById('mo-part-rate').textContent = stats.monthly.active_rate_percentage + '%';
-                document.getElementById('mo-part-sub').textContent = `${stats.monthly.active_team_count} active out of ${stats.monthly.team_size}`;
+                document.getElementById('td-part-rate').textContent = stats.today.active_rate_percentage + '%';
+                document.getElementById('td-part-sub').textContent = `${stats.today.active_team_count} active out of ${stats.today.team_size}`;
+                document.getElementById('td-events-count').textContent = stats.today.total_events_count;
 
                 // Info bar
                 document.getElementById('info-tz').textContent = stats.timezone;
@@ -1315,87 +2305,37 @@ DASHBOARD_HTML = """
                 document.getElementById('info-bot-user').textContent = stats.bot_user;
                 document.getElementById('info-last-updated').textContent = stats.current_time;
 
-                // Update Charts
-                if (overviewChart && stats.weekly.daily_trends) {
-                    overviewChart.data.labels = stats.weekly.daily_trends.map(d => d.display_date);
-                    overviewChart.data.datasets[0].data = stats.weekly.daily_trends.map(d => d.total_hours);
-                    overviewChart.update('none');
-                }
-                if (weeklyChart && stats.weekly.daily_trends) {
-                    weeklyChart.data.labels = stats.weekly.daily_trends.map(d => `${d.day_name} (${d.display_date})`);
-                    weeklyChart.data.datasets[0].data = stats.weekly.daily_trends.map(d => d.total_hours);
-                    weeklyChart.update('none');
-                }
-                if (monthlyChart && stats.monthly.daily_trends) {
-                    monthlyChart.data.labels = stats.monthly.daily_trends.map(d => d.display_date);
-                    monthlyChart.data.datasets[0].data = stats.monthly.daily_trends.map(d => d.total_hours);
-                    monthlyChart.update('none');
-                }
-
-                // Update Overview Podium List
-                const ovPodium = document.getElementById('ov-leaderboard');
-                if (ovPodium && stats.weekly.members) {
-                    const top5 = stats.weekly.members.slice(0, 5);
-                    ovPodium.innerHTML = top5.map((m, idx) => {
-                        const rankClass = idx === 0 ? 'rank-1' : (idx === 1 ? 'rank-2' : (idx === 2 ? 'rank-3' : 'rank-other'));
-                        const avatar = m.avatar_url 
-                            ? `<img src="${m.avatar_url}" alt="${m.name}" class="leader-avatar">`
-                            : `<div class="leader-avatar">${(m.name[0] || '?').toUpperCase()}</div>`;
-                        return `
-                        <div class="leader-item">
-                            <div class="leader-left">
-                                <span class="leader-rank ${rankClass}">${idx + 1}</span>
-                                ${avatar}
-                                <div>
-                                    <div class="leader-name">${m.name}</div>
-                                    <div style="font-size: 0.75rem; color: var(--text-muted);">${m.active_days} / 7 days active</div>
-                                </div>
-                            </div>
-                            <div class="leader-score">${m.total_formatted}</div>
-                        </div>`;
-                    }).join('') || '<div style="color: var(--text-muted); font-size: 0.85rem; padding: 1rem; text-align: center;">No activity recorded yet.</div>';
-                }
-
                 // Update Live Members Table
                 const tbody = document.getElementById('membersBody');
                 if (tbody && stats.members) {
-                    tbody.innerHTML = stats.members.map(m => {
-                        const avatarHtml = m.avatar_url 
-                            ? `<img src="${m.avatar_url}" alt="${m.name}" class="avatar">`
-                            : `<div class="avatar">${(m.name[0] || '?').toUpperCase()}</div>`;
+                    tbody.innerHTML = stats.members.map(u => {
+                        const avatarHtml = u.avatar_url 
+                            ? `<img src="${u.avatar_url}" alt="${u.name}" class="avatar">`
+                            : `<div class="avatar">${(u.name[0] || '?').toUpperCase()}</div>`;
 
                         return `
-                        <tr class="member-row" data-name="${m.name.toLowerCase()}" data-username="${m.username.toLowerCase()}" data-status="${m.status}">
+                        <tr class="member-row" data-name="${u.name.toLowerCase()}" data-username="${u.username.toLowerCase()}" data-status="${u.status}">
                             <td>
                                 <div class="user-cell">
                                     ${avatarHtml}
                                     <div class="user-names">
-                                        <span class="user-name">${m.name}</span>
-                                        <span class="user-handle">${m.username}</span>
+                                        <span class="user-name">${u.name}</span>
+                                        <span class="user-handle">${u.username}</span>
                                     </div>
                                 </div>
                             </td>
                             <td>
-                                <span class="badge-status ${m.status}">
-                                    <span class="status-dot ${m.status}"></span>
-                                    ${m.status}
+                                <span class="badge-status ${u.status}">
+                                    <span class="status-dot ${u.status}"></span>
+                                    ${u.status}
                                 </span>
                             </td>
-                            <td>
-                                <span class="time-pill highlight">${m.online_today_formatted}</span>
-                            </td>
-                            <td>
-                                <span class="time-pill">${m.online_week_formatted}</span>
-                            </td>
-                            <td>
-                                <span class="time-pill">${m.online_month_formatted}</span>
-                            </td>
-                            <td>
-                                <span class="time-pill">${m.current_session_formatted}</span>
-                            </td>
-                            <td style="color: var(--text-muted); font-size: 0.8rem;">
-                                ${m.last_change_time}
-                            </td>
+                            <td><span class="time-pill highlight">${u.online_today_formatted}</span></td>
+                            <td><span class="time-pill">${u.online_yesterday_formatted || '-'}</span></td>
+                            <td><span class="time-pill">${u.online_week_formatted}</span></td>
+                            <td><span class="time-pill">${u.online_month_formatted}</span></td>
+                            <td><span class="time-pill">${u.current_session_formatted}</span></td>
+                            <td style="color: var(--text-muted); font-size: 0.8rem;">${u.last_change_time}</td>
                         </tr>`;
                     }).join('');
                     filterMembers();
@@ -1408,6 +2348,8 @@ DASHBOARD_HTML = """
 
         // Initialize on load
         window.addEventListener('DOMContentLoaded', () => {
+            const savedSetting = localStorage.getItem('statusbot_theme') || 'auto';
+            updateThemeUI(savedSetting);
             initCharts();
             setInterval(refreshStats, 5000);
         });
@@ -1425,6 +2367,23 @@ def home():
 def api_stats():
     return jsonify(get_all_stats())
 
+@app.route("/api/stats/day")
+def api_stats_day():
+    date_str = request.args.get("date", now().strftime("%Y-%m-%d"))
+    member_filter = request.args.get("member", "all")
+    
+    current_time = now()
+    all_stats = get_all_stats()
+    live_today_map = {m["id"]: m["online_today_seconds"] for m in all_stats.get("members", [])}
+    
+    is_today = (date_str == current_time.strftime("%Y-%m-%d"))
+    day_stats = stats_manager.get_day_stats(
+        date_str=date_str,
+        live_today_seconds=live_today_map if is_today else None,
+        member_filter=member_filter
+    )
+    return jsonify(day_stats)
+
 @app.route("/api/stats/weekly")
 def api_stats_weekly():
     all_stats = get_all_stats()
@@ -1435,12 +2394,14 @@ def api_stats_monthly():
     all_stats = get_all_stats()
     return jsonify(all_stats.get("monthly", {}))
 
+@app.route("/api/sync", methods=["GET", "POST"])
+def api_sync():
+    success = trigger_sync()
+    return jsonify({"success": success, "message": "Channel sync triggered"})
+
 @app.route("/api/export/csv")
 def api_export_csv():
     period = request.args.get("period", "weekly").lower()
-    if period not in ["weekly", "monthly"]:
-        period = "weekly"
-    
     current_time = now()
     all_stats = get_all_stats()
     live_today_map = {m["id"]: m["online_today_seconds"] for m in all_stats.get("members", [])}
